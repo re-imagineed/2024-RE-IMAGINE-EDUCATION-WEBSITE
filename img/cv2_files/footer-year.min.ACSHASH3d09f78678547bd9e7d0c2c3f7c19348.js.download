@@ -1,0 +1,1 @@
+(function(b){b(document).ready(function(){var d=(new Date).getFullYear(),a=b(".legal-copy").html();if(a){var c=a.match(/\d+/);null!=c&&c[0].startsWith("20")&&(a=a.replace(c,d));a=a.replace("{year}",d);b("footer .legal-copy").html(a)}})})(jQuery);

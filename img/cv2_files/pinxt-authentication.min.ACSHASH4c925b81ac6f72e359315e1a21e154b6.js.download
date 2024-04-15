@@ -1,0 +1,745 @@
+(function ($) {
+
+        ns("News.App.Pinxt").Authentication = {
+            piNxtEndPoint: $('body').data('pinxtendpoint'),
+            usrAuth: '',
+            hhid: '',
+            userID: '',
+            hbaStatus: '',
+            mvpd: '',
+            requestID: $('body').data('requestid'),
+            piNxt_access_expiry: localStorage.getItem("pi_access_token_expiry"),
+            deviceId: localStorage.getItem("deviceId"),
+            authCode: '',
+            isOnPlant: false,
+            authXTraceId: '',
+
+            init: async function () {
+                let auth = Cookies.get("authenticated") ? Cookies.get("authenticated") : 'false';
+                let mvpd = Cookies.get("player-mvpd") ? Cookies.get("player-mvpd") : '';
+                News.App.Pinxt.Authentication.usrAuth = auth === 'true';
+                News.App.Pinxt.Authentication.mvpd = mvpd;
+
+                $('#logout-button').click(function (e) {
+                    if (News.App.Pinxt.Authentication.usrAuth) {
+                        e.originalEvent.currentTarget.href = window.location.href
+                        News.App.Adobe.Authentication.logout();
+                    }
+                });
+                $('#sign-out-btn').click(function (e) {
+                    if (News.App.Pinxt.Authentication.usrAuth) {
+                        e.originalEvent.currentTarget.href = window.location.href
+                        News.App.Adobe.Authentication.logout();
+                    }
+                });
+
+                if (!News.App.Pinxt.Authentication.deviceId) {
+                    const devId = News.App.Pinxt.Authentication.genDeviceId();
+                    localStorage.setItem("deviceId", devId);
+                }
+                News.App.Adobe.Authentication.refreshAdobeToken();
+
+                if (News.App.Pinxt.Authentication.mvpd && News.App.Pinxt.Authentication.mvpd.startsWith("TempPass")) {
+                    News.App.Adobe.Authentication.getAuthN()
+                } else {
+                    if (!News.App.Pinxt.Authentication.usrAuth) {
+                        await News.App.Pinxt.Authentication.getPiAuthN(false);
+                    } else {
+                        let isSessionValid = News.App.Pinxt.Authentication.validateTokens()
+                        if (!isSessionValid) {
+                            await News.App.Pinxt.Authentication.getPiAuthN(true);
+                        } else {
+                            if (new Date() >= new Date(Number(News.App.Pinxt.Authentication.piNxt_access_expiry))) {
+                                News.App.Pinxt.Authentication.getPiTokens("refresh_token");
+                            } else {
+                                News.App.Pinxt.Authentication.setAuthenticationStatus(true)
+                            }
+                        }
+                    }
+                }
+            },
+
+            getPiAuthN: async function (checkAuth) {
+                let api = News.App.Pinxt.Authentication.piNxtEndPoint + "/auth/oauth/v2/consumer/tve/dcr-token/auth?checkAuthn=" + checkAuth,
+                    startTime = new Date().getTime(),
+                    nonceId = News.App.Pinxt.Authentication.genDeviceId();
+
+                let codeVerifier = News.App.Pinxt.Authentication.generateCodeVerifier()
+                let codeChallenge = await News.App.Pinxt.Authentication.generateCodeChallengeFromVerifier(codeVerifier)
+                // use this value when we enable the auto auth functionality
+                let onPlant = News.App.Pinxt.Authentication.getOnPlantStatus();
+
+                $('#login-button, #softwall-login-button, #paywall-login-button, #videoLoginButton').click(function (e) {
+                    if (onPlant) {
+                        localStorage.setItem("manualLogout", "false")
+                        News.App.Pinxt.Authentication.isOnPlant = true;
+                        e.originalEvent.currentTarget.href = window.location.href
+                    }
+                })
+                $('.recent-activity-signed-out, .recent-activity-mobile').click(function (e) {
+                    if (onPlant) {
+                        localStorage.setItem("manualLogout", "false")
+                        News.App.Pinxt.Authentication.isOnPlant = true;
+                        window.location.href = document.querySelector('.recent-activity-path').href;
+                        location.reload();
+                    }
+                })
+
+                $('.header_watch,.live-stream-promo--block').click(function (e) {
+                    if (onPlant) {
+                        localStorage.setItem("manualLogout", "false")
+                        News.App.Pinxt.Authentication.isOnPlant = true;
+                    }
+                })
+
+                if (onPlant) {
+                    if (localStorage.getItem("manualLogout") === "true") {
+                        // If the user manually logs out even though he is on plant, we set the onPlant as false.
+                        News.App.Pinxt.Authentication.isOnPlant = false;
+                    } else {
+                        News.App.Pinxt.Authentication.isOnPlant = true;
+                        localStorage.setItem('autoAuthPromptDisplay', 'true');
+                        News.App.Pinxt.Authentication.setCookie('player-mvpd', "Spectrum");
+                        localStorage.setItem('player-mvpd', "Spectrum");
+                    }
+                } else {
+                    localStorage.setItem('autoAuthPromptDisplay', 'false');
+
+                }
+                localStorage.setItem("codeChallenge", codeChallenge)
+                localStorage.setItem("codeVerifier", codeVerifier)
+
+
+                let data = {
+                    'client_id': "spectrumnews-web",
+                    'response_type': "code",
+                    'onPlant': News.App.Pinxt.Authentication.isOnPlant,
+                    'nonce': nonceId,
+                    'state': "state",
+                    'code_challenge_method': "S256",
+                    'code_challenge': localStorage.getItem("codeChallenge"),
+                    'deviceId': localStorage.getItem("deviceId"),
+                    'deviceType': "web",
+                    'requestorId': News.App.Pinxt.Authentication.requestID,
+                    'token': localStorage.getItem("access_token")
+                }
+
+                $.ajax({
+                    type: 'POST',
+                    url: api,
+                    contentType: "application/json",
+                    async: false,
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'application/json',
+                        'X-Device-Info': localStorage.getItem("deviceInfo")
+                    },
+                    data: data,
+                    xhrFields: {withCredentials: true},
+                    success: function (authData, status, xhr) {
+                        if (authData.resultCode === "200") {
+                            News.App.Pinxt.Authentication.authCode = authData.authCode;
+                            News.App.Pinxt.Authentication.authXTraceId = xhr.getResponseHeader('X-Trace-Id')
+                            localStorage.setItem("authCode", authData.authCode);
+                            News.App.Pinxt.Authentication.getPiTokens("authorization_code");
+                            News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, 200, "All_Generic_API_Call_Success", startTime, "POST", JSON.stringify(data));
+                        }
+                    },
+                    error: function (err) {
+                        News.App.Pinxt.Authentication.setAuthenticationStatus(false)
+                        if (err.status == 400 && err.resultCode == 2168) {
+                            console.error("Device Id is not present")
+                        } else {
+                            News.App.Pinxt.Authentication.handlePiFailures(api, startTime, err)
+                        }
+                    }
+                })
+            },
+
+            handlePiFailures: async function (api, startTime, errResp) {
+                let authOrchResp = errResp.responseJSON.authOrchServiceResp;
+                let isAuth = authOrchResp.isAuthenticated,
+                    retry = 0;
+                // Authenticate Sad Path -- AuthOrch service will return a 200 with Reg code
+                if (errResp.status == 403) {
+                    if (!isAuth) {
+                        let regCode = authOrchResp.registrationCode.code;
+                        localStorage.setItem("regCode", regCode);
+                        News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, 200, "All_Generic_API_Call_Success", startTime, "POST", 'N/A');
+                    }
+                }
+                    // TODO:: Cover the 401 error codes when Auto auth is implemented
+                // Auth Orch service returns a 200 but the usermetadata or user ID is not available
+                else if (errResp.status == 401) {
+                    if (isAuth) {
+                        let userMetaData = authOrchResp.userMetaDAta,
+                            userID;
+                        if (userMetaData) {
+                            userID = userMetaData.userID;
+                        }
+                    }
+                    console.error("usermetadata or User Id is not available " + errResp.status)
+                }
+                // Non 200 status codes from Auth Orch service
+                else if (errResp.status == 400 && errResp.resultCode === "4065") {
+                    let registrationCode = authOrchResp.registrationCode;
+                    if (!registrationCode) {
+                        console.error("Failure message:: " + errResp.resultMesage + " and Auth Orch error code " + authOrchResp.errorCode)
+                        News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, authOrchResp.errorCode, "All_Generic_API_Call_Failure", startTime, "POST", "N/A");
+                    }
+                } else if (errResp.status == 502) {
+                    News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, authOrchResp.errorCode, "All_Generic_API_Call_Failure", startTime, "POST", "N/A");
+                    console.error("Error 502 from the Auth Orch service.")
+                    if (!isAuth) {
+                        if (authOrchResp.registrationCode.code) {
+                            let regCode = authOrchResp.registrationCode.code;
+                            localStorage.setItem("regCode", regCode);
+                        } else {
+                            retry++;
+                            if (retry <= 2) {
+                                console.error("No RegCode found retrying authenticating..." + retry)
+                                // Retry Authenticating the user if the regCode is null
+                                await News.App.Pinxt.Authentication.getPiAuthN(false);
+                            }
+                        }
+                    }
+                }
+            },
+
+            getPiTokens: function (grantType) {
+                let api = News.App.Pinxt.Authentication.piNxtEndPoint + "/auth/oauth/v2/token",
+                    data;
+                let startTime = new Date().getTime();
+
+                if (grantType === "authorization_code") {
+                    data = {
+                        'client_id': "spectrumnews-web",
+                        'code': News.App.Pinxt.Authentication.authCode,
+                        'code_verifier': localStorage.getItem("codeVerifier"),
+                        'grant_type': grantType
+                    }
+                } else if (grantType === "refresh_token") {
+                    data = {
+                        'client_id': "spectrumnews-web",
+                        'grant_type': grantType,
+                        'refresh_token': localStorage.getItem("refresh_token"),
+                        'requestorId': News.App.Pinxt.Authentication.requestID,
+                        'deviceId': localStorage.getItem("deviceId"),
+                        'resource': "SPECTRUMNEWS",
+                        'token': localStorage.getItem("access_token")
+                    }
+                }
+
+                $.ajax({
+                    type: 'POST',
+                    url: api,
+                    contentType: "application/json",
+                    async: false,
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'application/json',
+                        'X-Device-Info': localStorage.getItem("deviceInfo")
+                    },
+                    data: data,
+                    xhrFields: {withCredentials: true},
+                    success: function (tokensData) {
+                        if (tokensData.resultCode === "200") {
+                            localStorage.setItem("pi_access_token", tokensData.access_token);
+                            localStorage.setItem("refresh_token", tokensData.refresh_token);
+                            localStorage.setItem("id_token", tokensData.id_token);
+                            if (News.App.Pinxt.Authentication.isOnPlant) {
+                                localStorage.setItem("autoAuth", "true")
+                            }
+                            News.App.Pinxt.Authentication.setAuthenticationStatus(true);
+                            const date = new Date();
+                            // Expire the access token 10 min before its actual expiry time to get a new pair of tokens
+                            // Both Refresh Tokens and Access Tokens will expire in 12 hrs
+                            let pi_access_token_expiry = date.setSeconds(date.getSeconds() + tokensData.expires_in - 600);
+                            localStorage.setItem("pi_access_token_expiry", pi_access_token_expiry.toString())
+                            News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, 200, "All_Generic_API_Call_Success", startTime, "POST", JSON.stringify(data));
+                        }
+                    },
+                    error: function (err) {
+                        News.App.Pinxt.Authentication.setAuthenticationStatus(false)
+                        console.error("Error Message:: " + err.resultMessage + " Error Code:: " + err.resultCode)
+                        News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, err.resultCode, "All_Generic_API_Call_Failure", startTime, "POST", JSON.stringify(data));
+                    }
+                })
+            },
+
+            getShortMediaToken: function (resourceID) {
+                if (News.App.Pinxt.Authentication.mvpd && News.App.Pinxt.Authentication.mvpd.startsWith("TempPass")) {
+                    return News.App.Adobe.Authentication.getShortMediaToken(resourceID)
+                } else {
+                    var result = $.Deferred();
+                    let startTime = new Date().getTime(),
+                        api = News.App.Pinxt.Authentication.piNxtEndPoint + "/authorchsvc/authorchestrationservice/token/media",
+                        data = {
+                            'requestorId': News.App.Pinxt.Authentication.requestID,
+                            'deviceId': localStorage.getItem("deviceId"),
+                            'resource': resourceID,
+                            'deviceType': "web",
+                            'token': localStorage.getItem("access_token")
+                        }
+                    $.ajax({
+                        type: 'POST',
+                        url: api,
+                        contentType: "application/json",
+                        headers: {
+                            'Authorization': "Bearer " + localStorage.getItem("pi_access_token"),
+                            'Accept': 'application/json',
+                            'X-Device-Info': localStorage.getItem("deviceInfo")
+                        },
+                        data: JSON.stringify(data),
+                        xhrFields: {withCredentials: true},
+                        success: function (authData) {
+                            result.resolve(authData)
+                            News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, 200, "All_Generic_API_Call_Success", startTime, "POST", JSON.stringify(data));
+                        },
+                        error: function (jqXhr, ex) {
+                            result.reject(jqXhr)
+                            News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, jqXhr.status, "All_Generic_API_Call_Failure", startTime, "POST", JSON.stringify(data));
+                        }
+                    })
+
+                    return result.promise();
+                }
+            },
+
+            validateTokens: function () {
+                let api = News.App.Pinxt.Authentication.piNxtEndPoint + "/auth/oauth/v2/validateSession",
+                    isValidSession = false,
+                    startTime = new Date().getTime();
+
+                $.ajax({
+                    type: 'GET',
+                    url: api,
+                    contentType: "application/json",
+                    async: false,
+                    headers: {
+                        'x-client-id': "spectrumnews-web",
+                        'x-access-token': localStorage.getItem("pi_access_token"),
+                        'x-refresh-token': localStorage.getItem("refresh_token"),
+                    },
+                    xhrFields: {withCredentials: true},
+                    success: function (resp) {
+                        if (resp.resultCode === "200") {
+                            isValidSession = resp.isValidSession
+                            if (isValidSession) {
+                                let refreshTokenTTL = resp.refreshTokenTTL;
+                                let refreshTokenMaxTTL = resp.refreshTokenMaxTTL;
+
+                                // Refresh the tokens 10 min before the token is going to expire
+                                setTimeout(function () {
+                                    News.App.Pinxt.Authentication.getPiTokens("refresh_token");
+                                }, (refreshTokenTTL - 600) * 1000)
+
+                                // Check for authN and generate a new pair of tokens 10 min before the max refresh token is going to expire
+
+                                setTimeout(async function () {
+                                    await News.App.Pinxt.Authentication.getPiAuthN(true);
+                                }, (refreshTokenMaxTTL - 600) * 1000)
+                                News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, 200, "All_Generic_API_Call_Success", startTime, "GET", '');
+                            }
+                            return isValidSession
+                        }
+                    },
+                    error: function (err) {
+                        console.error("error in valid session")
+                        News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, err.resultCode, "All_Generic_API_Call_Failure", startTime, "GET", '');
+                    }
+                })
+                return isValidSession
+
+            },
+
+            getPageName: function () {
+                if (window && window.digitalData && window.digitalData.page && window.digitalData.page.pageName) {
+                    return window.digitalData.page.pageName;
+                } else {
+                    return "Unknown";
+                }
+            },
+
+            autoAuthMsg: function () {
+                let isOnplant = News.App.Pinxt.Authentication.getOnPlantStatus()
+                if (localStorage.getItem('autoAuthPromptDisplay') === 'true' && isOnplant) {
+                    var autoAuthHtmlBlock = '<div class="auto-auth-prompt">' +
+                        "<div class ='auto-auth-msg-container'><div class='info-icon' ></div>" +
+                        "<span class='auto-auth-msg'>You've been signed in automatically with your Spectrum account and have unlimited access to Spectrum News.</span></div>" +
+                        "<img class='auto-auth-cancel' src='/etc/designs/news/clientlibs/css/images/ki-x.png' alt='close'/> </div>"
+                    $('.site-header').prepend(autoAuthHtmlBlock);
+                    if (window.innerWidth < 1025) {
+                        document.querySelector('.header-ele').style.position = "unset"
+                    }
+
+                    let autoAuth = localStorage.getItem("autoAuth");
+
+                    window.addEventListener('satelliteEvent', function (event) {
+                        // Send analytics event - NEWS-6662
+                        if (autoAuth && autoAuth === 'true') {
+                            window._satellite && window._satellite.track('trackAction', {
+                                action: "authNSuccess",
+                                actionPageName: News.App.Pinxt.Authentication.getPageName(),
+                                event: "autoAuthLoginSuccess"
+                            });
+                        }
+                    })
+                }
+                if ((window.location.href).includes('noticias')) {
+                    $('.auto-auth-msg').text('Has iniciado automáticamente una sesión con tu cuenta de Spectrum y tienes acceso ilimitado a Spectrum News.')
+                }
+
+                $('.auto-auth-cancel').on('click', function (e) {
+                    $('.auto-auth-prompt').remove();
+                    if (window.innerWidth < 1025) {
+                        document.querySelector('.header-ele').style.position = "fixed";
+                    }
+                    localStorage.setItem('autoAuthPromptDisplay', 'false');
+                });
+
+            },
+
+            setAuthenticationStatus: function (isAuthenticated) {
+                News.App.Pinxt.Authentication.usrAuth = (isAuthenticated === true);
+                News.App.Pinxt.Authentication.setIntervalForUserAuthInfo(100)
+
+                //Display Logout text if authenticated, display login/provider text if NOT authenticated
+                $('.logout').toggle(News.App.Pinxt.Authentication.usrAuth);
+                $('.provider-grid').toggle(!News.App.Pinxt.Authentication.usrAuth);
+                News.App.Pinxt.Authentication.unsupportedBrowserRedirect(News.App.Pinxt.Authentication.usrAuth);
+                News.App.Adobe.Authentication.handleTempPass();
+                let profileIcon = document.querySelector('.profile-icon')
+
+                if (News.App.Pinxt.Authentication.usrAuth) {
+                    let selected_mvpd = Cookies.get('player-mvpd');
+                    News.App.Pinxt.Authentication.setCookie("authenticated", true);
+                    localStorage.setItem("authenticated", "true");
+                    $('.recent-activity-dropdown').show();
+                    if (profileIcon) {
+                        profileIcon.setAttribute('src', '/etc/designs/news/clientlibs/css/images/ki-accountSignedIn-icon.svg');
+                    }
+                    $('.sign-in-dropdown').hide();
+                    // for mobile
+                    $('.mobile-recent-activity-dropdown').show();
+                    $('.mobile-sign-in-dropdown').hide();
+                    if (document.querySelector('.recent-activity-path') == null) {
+                        $('.signed-in-recent-activity').hide();
+                    }
+                    $('#spectrumSignup').addClass('hidden');
+                    $('#analyticsDataLayer').attr('data-is-authenticated', 'true');
+
+                    News.App.Pinxt.Authentication.autoAuthMsg();
+
+                    if (selected_mvpd.startsWith("TempPass")) {
+                        Cookies.set("tempPassUsed", 1, {
+                            expires: News.App.Adobe.Authentication.expireMVPD(),
+                            path: '/'
+                        });
+                    } else {
+                        News.App.Pinxt.Authentication.setIntervalForMetaInfo(100);
+                        News.App.Pinxt.Authentication.setIntervalForSatelliteEvent(100)
+                        News.App.Pinxt.Authentication.getUserMetaData();
+                    }
+                } else {
+                    $('.sign-in-dropdown').show();
+                    $('.recent-activity-dropdown').hide();
+                    if (profileIcon) {
+                        profileIcon.setAttribute('src', '/etc/designs/news/clientlibs/css/images/ki-accountSignOut-icon.png');
+                    }
+                    // for mobile
+                    if (document.querySelector('.recent-activity-signed-out') == null) {
+                        $('.sign-out-recent-activity').hide();
+                    }
+                    $('.mobile-recent-activity-dropdown').hide();
+                    $('.mobile-sign-in-dropdown').show();
+                    $('#analyticsDataLayer').attr('data-is-authenticated', 'false');
+                }
+            },
+
+            getUserMetaData: function () {
+                let id_token = localStorage.getItem("id_token"),
+                    userMetadata = {};
+                if (id_token) {
+                    let payload = News.App.Pinxt.Authentication.parseJwt(id_token);
+                    if (payload.userMetaData) {
+                        userMetadata = payload.userMetaData.data
+                        News.App.Pinxt.Authentication.setMetadataStatus(userMetadata)
+                    }
+                }
+
+                return userMetadata
+            },
+
+            setMetadataStatus: function (data) {
+                News.App.Pinxt.Authentication.hhid = data.householdID;
+                News.App.Pinxt.Authentication.userID = data.userID;
+                News.App.Pinxt.Authentication.hbaStatus = data.hba_status
+                News.App.Pinxt.Authentication.mvpd = data.mvpd
+                News.App.Pinxt.Authentication.setCookie('player-mvpd', data.mvpd);
+                localStorage.setItem('player-mvpd', data.mvpd)
+                News.App.Pinxt.Authentication.setCookie('player-hhid', data.householdID);
+                localStorage.setItem('player-hhid', data.householdID);
+                localStorage.setItem('hba-status', data.hba_status)
+                $('#analyticsDataLayer').attr('data-hhid', data.householdID);
+            },
+
+            unsupportedBrowserRedirect: function (auth) {
+                let result = bowser.getParser(navigator.userAgent).getResult();
+
+                $('.player .live-tv').toggle(auth);  //Display Live Player if authenticated
+
+                // goToPage takes you to unsupported browser pages only when you try to watch the stream
+                if ((result.os.name === "Android" && result.browser.name === "Firefox") || (result.os.name === "iOS" && result.browser.name !== "Safari")) {
+                    News.App.Pinxt.Authentication.goToPage("unsupported-mobile-browser");
+                } else if (result.browser.name === "Internet Explorer") {
+                    News.App.Pinxt.Authentication.goToPage("unsupported-browser")
+                } else if (!auth && $('body').data('enableAuthentication') && !isAuthorMode()) {
+                    window.location.href = $('#login-button').prop('href');
+                } else {
+                    let playerLength = $('.watch-live .live-tv').length || $('.html5-player .live-tv').length;
+
+                    if (playerLength && !auth && !isAuthorMode()) { //If on live player page and not authenticated and not in author mode, redirect to login page
+                        News.App.QuantumAnalytics.playbackExitBeforeStartByApp('SpectrumLocal_playbackExitBeforeStart_linear_byApplication', 'VP-1004', 'Not Authenticated')
+                        News.App.Pinxt.Authentication.goToPage("login");
+                    }
+                }
+            },
+
+            piNxtLogout: function () {
+                let api = News.App.Pinxt.Authentication.piNxtEndPoint + "/auth/oauth/v2/logout/single";
+                let startTime = new Date().getTime()
+
+                $.ajax({
+                    type: 'POST',
+                    url: api,
+                    contentType: "application/json",
+                    async: false,
+                    headers: {
+                        'Authorization': "Bearer " + localStorage.getItem("pi_access_token"),
+                        'X-Device-Info': localStorage.getItem("deviceInfo")
+                    },
+                    xhrFields: {withCredentials: true},
+                    success: function (resp) {
+                        if (resp.resultCode === "200") {
+                            localStorage.removeItem("pi_access_token")
+                            localStorage.removeItem("authCode")
+                            localStorage.removeItem("pi_access_token_expiry")
+                            localStorage.removeItem("refresh_token")
+                            localStorage.removeItem("id_token")
+                            localStorage.removeItem("codeChallenge")
+                            localStorage.removeItem("codeVerifier")
+                            localStorage.removeItem('autoAuthPromptDisplay')
+                            if (News.App.Pinxt.Authentication.isOnPlant) {
+                                localStorage.setItem("manualLogout", 'true')
+                            }
+                        }
+                        News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, 200, "All_Generic_API_Call_Success", startTime, "POST", 'N/A');
+                    },
+                    error: function (err) {
+                        console.error("error in valid session")
+                        News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, err.resultCode, "All_Generic_API_Call_Failure", startTime, "POST", "N/A");
+                    }
+                })
+            },
+
+            getOS: function () {
+                var userAgent = window.navigator.userAgent,
+                    platform = window.navigator?.userAgentData?.platform || window.navigator.platform,
+                    macosPlatforms = ['Macintosh', 'MacIntel', 'MacPPC', 'Mac68K'],
+                    windowsPlatforms = ['Win32', 'Win64', 'Windows', 'WinCE'],
+                    iosPlatforms = ['iPhone', 'iPad', 'iPod'],
+                    os = null;
+
+                if (macosPlatforms.indexOf(platform) !== -1) {
+                    os = 'Mac OS';
+                } else if (iosPlatforms.indexOf(platform) !== -1) {
+                    os = 'iOS';
+                } else if (windowsPlatforms.indexOf(platform) !== -1) {
+                    os = 'Windows';
+                } else if (/Android/.test(userAgent)) {
+                    os = 'Android';
+                } else if (/Linux/.test(platform)) {
+                    os = 'Linux';
+                }
+
+                return os;
+            },
+
+            goToPage: function (pageName) {
+                if (window.location.pathname.indexOf("watch_spectrum_news_live") > -1) {
+                    var newUrl = (window.location.pathname).replace("watch_spectrum_news_live", pageName);
+                    if (newUrl.indexOf("/deepLink") > -1) {
+                        window.location.href = newUrl.replace("/deepLink", "");
+                    } else {
+                        window.location.href = newUrl;
+                    }
+                }
+            },
+
+            setCookie: function (name, value) {
+                Cookies.set(name, value, {expires: 365, path: '/'});
+            },
+
+            trackUsrAuth: function () {
+                // Send login success event
+                var usrStatus = new CustomEvent(
+                    "userStatus", {
+                        detail: {
+                            usrAuth: News.App.Pinxt.Authentication.usrAuth
+                        }
+                    });
+                window.dispatchEvent(usrStatus);
+            },
+
+            trackLogInSuccess: function () {
+                // Send login success event
+                var userInteraction = new CustomEvent(
+                    "userInteraction", {
+                        detail: {
+                            action: "loginSuccess",
+                            mvpd: Cookies.get('player-mvpd'),
+                            hhid: Cookies.get('player-hhid'),
+                            hba_status: localStorage.getItem('hba-status'),
+                            isAuthenticated: News.App.Pinxt.Authentication.getIsAuthenticated(),
+                        }
+                    });
+
+                window.dispatchEvent(userInteraction);
+            },
+
+            trackSatelliteEvent: function () {
+                var satelliteEvent = new CustomEvent(
+                    "satelliteEvent", {
+                        detail: {
+                            event: window._satellite
+                        }
+                    });
+                window.dispatchEvent(satelliteEvent);
+            },
+
+            setIntervalForMetaInfo: function (delay) {
+                var intervalID = window.setInterval(function () {
+                    if (News.App.Pinxt.Authentication.hhid || News.App.Pinxt.Authentication.userID) {
+                        News.App.Pinxt.Authentication.trackLogInSuccess();
+                        window.clearInterval(intervalID);
+                    }
+                }, delay);
+            },
+
+            setIntervalForUserAuthInfo: function (delay) {
+                var intervalID = window.setInterval(function () {
+                    News.App.Pinxt.Authentication.trackUsrAuth();
+                    window.clearInterval(intervalID);
+                }, delay);
+            },
+
+            setIntervalForSatelliteEvent: function (delay) {
+                var intervalID = window.setInterval(function () {
+                    if (window._satellite) {
+                        News.App.Pinxt.Authentication.trackSatelliteEvent();
+                        window.clearInterval(intervalID);
+                    }
+                }, delay);
+            },
+
+            getIsAuthenticated: function () {
+                return Cookies.get('authenticated') ? 'Yes' : 'No'
+            },
+
+            genDeviceId: function () {
+                return 'xxxxxxxx-xxxx-xxxx-yxxx-xxxxxxxxxxxx'
+                    .replace(/[xy]/g, function (c) {
+                        const r = Math.random() * 16 | 0,
+                            v = c === 'x' ? r : (r & 0x3 | 0x8);
+                        return v.toString(16);
+                    });
+            },
+
+            // GENERATING CODE VERIFIER
+            dec2hex: function (dec) {
+                return ("0" + dec.toString(16)).substr(-2);
+            },
+
+            generateCodeVerifier: function () {
+                var array = new Uint32Array(56 / 2);
+                window.crypto.getRandomValues(array);
+                return Array.from(array, News.App.Pinxt.Authentication.dec2hex).join("");
+            },
+
+            // Generate code challenge from code verifier
+
+            sha256: function (plain) {
+                // returns promise ArrayBuffer
+                const encoder = new TextEncoder();
+                const data = encoder.encode(plain);
+                return window.crypto.subtle.digest("SHA-256", data);
+            },
+
+            base64urlencode: function (a) {
+                var str = "";
+                var bytes = new Uint8Array(a);
+                var len = bytes.byteLength;
+                for (var i = 0; i < len; i++) {
+                    str += String.fromCharCode(bytes[i]);
+                }
+                return btoa(str)
+                    .replace(/\+/g, "-")
+                    .replace(/\//g, "_")
+                    .replace(/=+$/, "");
+            },
+
+            generateCodeChallengeFromVerifier: async function (v) {
+                var hashed = await News.App.Pinxt.Authentication.sha256(v);
+                var base64encoded = News.App.Pinxt.Authentication.base64urlencode(hashed);
+                return base64encoded;
+            },
+
+            parseJwt: function (token) {
+                var base64Url = token.split('.')[1];
+                var base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+                var jsonPayload = decodeURIComponent(window.atob(base64).split('').map(function (c) {
+                    return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+                }).join(''));
+
+                return JSON.parse(jsonPayload);
+            },
+
+            getOnPlantStatus: function () {
+                // Behind the modem call
+                let api = $('body').data('onplantapi'),
+                    status = false,
+                    startTime = new Date().getTime();
+                $.ajax({
+                    type: 'GET',
+                    url: api,
+                    async: false,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                    },
+                    success: function (data) {
+                        if (data && data.WrappedResponse) {
+                            status = data.WrappedResponse.IsOnPlant
+                        }
+                        News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, 200, "All_Generic_API_Call_Success", startTime, "GET", "");
+                    },
+                    error: function (jqXhr, ex) {
+                        News.App.QuantumAnalytics.quantumApiSuccessOrFailure(api, jqXhr.status, "All_Generic_API_Call_Failure", startTime, "GET", "");
+                    }
+                })
+                return status
+            }
+        }
+
+        $(document).ready(function () {
+            try {
+                News.App.Pinxt.Authentication.init()
+            } catch (ex) {
+                console.error("error in PiNxt Authentication " + ex)
+            }
+        });
+
+    }
+)
+(jQuery);

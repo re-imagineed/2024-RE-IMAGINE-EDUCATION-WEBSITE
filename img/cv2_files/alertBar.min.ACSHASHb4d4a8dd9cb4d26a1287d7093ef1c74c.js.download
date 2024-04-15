@@ -1,0 +1,23 @@
+/*
+ jQuery ticker - v0.1 - 7/9/2011
+
+ Version: 0.1, Last updated: 7/9/2011
+ Requires: jQuery v1.3.2+
+
+ Copyright (c) 2011 Radek Pleskac www.radekpleskac.com
+ Dual licensed under the MIT and GPL licenses.
+ http://www.opensource.org/licenses/mit-license.php
+ http://www.gnu.org/licenses/gpl.html
+
+ Examples https://github.com/Plesin/jquery-ticker/blob/master/jquery.ticker.js
+ jQuery plugin to turn an unordered list <ul> into a simple ticker, displaying one list item at a time.
+
+*/
+(function(a){a.fn.ticker=function(d){a.fn.ticker.defaults={controls:!1,interval:3E3,effect:"fadeIn",duration:400};var b=a.extend({},a.fn.ticker.defaults,d);if(this.length)return this.each(function(){function c(){return h.find(".ticker-item")}function l(){var e=c(),f=e.eq(g);g++;g==e.length&&(g=0);var m=e.eq(g);if("fadeIn"==b.effect)f.fadeOut(function(){m.fadeIn()});else if("slideUp"==b.effect||"slideDown"==b.effect){e=h.height();var n="slideUp"==b.effect?1:-1;f.animate({top:-e*n+"px"},b.duration,
+function(){a(this).hide()});m.css({display:"block",top:e*n+"px"});m.animate({top:0},b.duration)}}var h=a(this),g=0,k=!1;c().not(":first").hide();if("slideUp"==b.effect||"slideDown"==b.effect)h.css("position","relative"),c().css("position","absolute");(function(){h.hover(function(){k=!0},function(){k=!1});if("undefined"!==typeof document.hidden){var e="hidden";var f="visibilitychange"}else"undefined"!==typeof document.msHidden?(e="msHidden",f="msvisibilitychange"):"undefined"!==typeof document.webkitHidden&&
+(e="webkitHidden",f="webkitvisibilitychange");document.addEventListener(f,function(){document[e]?(k=!0,a("body").addClass("tickerPaused")):(k=!1,a("body").removeClass("tickerPaused"))},!1)})();(function(){setInterval(function(){k||l()},b.interval)})()})}})(jQuery);
+(function(a){ns("News.App").AlertBar={init:function(){a(".wxAlertBar").each(News.App.AlertBar.loadAllAlerts)},loadAllAlerts:function(d,b){d=a(".alert-bar__displayed-alerts .alert-bar__li");var c=a(".alert-bar__raven-alerts .alert-bar__li"),l=a(c).hasClass("alert-bar__li--weather");c=a(c).hasClass("alert-bar__li--closings");0<d.length&&(a(".wxAlertBar").show("slow"),News.App.AlertBar.setBodyClass(),d.first().show());l||c?(l||c)&&a(".alert-bar__raven-alerts .alert-bar__li",a(b)).each(News.App.AlertBar.loadSingleAlert):
+1<d.length&&a(".alert-bar__displayed-alerts").ticker(News.App.tickerConfig)},loadSingleAlert:function(d,b){var c="",l=(new Date).getTime(),h=a(b).hasClass("alert-bar__li--weather"),g=a(b).hasClass("alert-bar__li--closings");d=localStorage.getItem("wxLocation");var k={};d&&(k={"Location-Type":"ZIPCODE","Location-Value":null==d?"":d});h?c="/services/alerts/weather/message."+News.core.getRavenid()+".json":g&&(c="/services/closings."+News.core.getRavenid()+".json");""!=c&&a.ajax({url:c,headers:k}).done(function(e){var f=
+a(b).closest(".wxAlertBar").find(".alert-bar__displayed-alerts");0<e.length?h?News.App.AlertBar.displayWeatherAlert(b,f,!0):g&&News.App.AlertBar.displayClosingsAlert(b,f):(News.App.AlertBar.alertAdded(f),h?(e=!1,ns("CQ.WCM").isEditMode&&ns("CQ.WCM").isEditMode()&&News.App.AlertBar.displayWeatherAlert(b,f,e)):g&&ns("CQ.WCM").isEditMode&&ns("CQ.WCM").isEditMode()&&News.App.AlertBar.displayClosingsAlert(b,f));News.App.QuantumAnalytics.quantumApiSuccessOrFailure(c,200,"All_Generic_API_Call_Success",l,
+"GET","N/A")}).fail(function(e){a(b).remove();News.App.QuantumAnalytics.quantumApiSuccessOrFailure(c,e.status,"All_Generic_API_Call_Failure",l,"GET","N/A")})},displayWeatherAlert:function(d,b,c){0!=c&&(c=a(b).find(".alert-bar__li--breaking").last(),c.is(".alert-bar__li")?a(d).insertAfter(c):a(d).prependTo(b),News.App.AlertBar.alertAdded(b))},displayClosingsAlert:function(d,b){var c=a(b).find(".alert-bar__li--custom").first();c.is(".alert-bar__li")?a(d).insertBefore(c):a(d).appendTo(b);News.App.AlertBar.alertAdded(b)},
+alertAdded:function(d){var b=a(".alert-bar__displayed-alerts .alert-bar__li"),c=b.length;1==c&&a(".wxAlertBar").is(":hidden")?(a(".wxAlertBar").show("slow"),News.App.AlertBar.setBodyClass(),b.first().show()):!a("body").hasClass("tickerStarted")&&2<=c&&(a(d).ticker(News.App.tickerConfig),a("body").addClass("tickerStarted"))},setBodyClass:function(){a("body").addClass("alerts-enabled")}};a(function(){try{News.App.AlertBar.init()}catch(d){}})})(jQuery);
